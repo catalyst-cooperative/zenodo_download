@@ -15,7 +15,7 @@ class ZenodoDownload:
     Handle connections and downloading of Zenodo Source archives
     """
 
-    def __init__(self, cfg, loglevel="WARNING", verbose=False, sandbox=False):
+    def __init__(self, loglevel="WARNING", verbose=False, sandbox=False):
         """
         Create a ZenDownloader instance
 
@@ -36,21 +36,41 @@ class ZenodoDownload:
             logger.addHandler(logging.StreamHandler())
 
         self.logger = logger
+        logger.info("Logging at loglevel %s" % loglevel)
+
+        cfg = self.load_config()
 
         if sandbox:
-            self.token = os.environ.get(
-                "ZENODO_TOKEN", cfg["zenodo_download"]["sandbox_token"])
             self.api_root = "https://sandbox.zenodo.org/api"
-            self.dois = cfg["zenodo_download"]["sandbox_dois"]
+            config_root = cfg["zenodo_download"]["sandbox"]
         else:
-            self.token = os.environ.get(
-                "ZENODO_TOKEN", ["zenodo_download"]["production_token"])
             self.api_root = "https://zenodo.org/api"
-            self.dois = cfg["zenodo_downloads"]["production_dois"]
+            config_root = cfg["zenodo_download"]["production"]
+
+        self.token = os.environ.get("ZENODO_TOKEN", config_root["token"])
+        self.dois = config_root["dois"]
 
         self.output_root = os.environ.get("PUDL_IN", cfg["pudl_in"])
 
-    def retrieve(self, archive, filters=None):
+    @staticmethod
+    def load_config():
+        """
+        Load ~/.pudl.yaml as a dict.  Raise error if there is no
+        zenodo_download section.
+
+        Args: None
+        Returns:
+            dict of configuration parameters
+        """
+        with open(os.path.expanduser("~/.pudl.yaml"), "r") as f:
+            cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
+
+            if "zenodo_download" not in cfg:
+                raise ValueError("No zenodo_download config in ~/.pudl.yaml")
+
+        return cfg
+
+    def collect(self, archive, filters=None):
         """
         Download the files from the provided archive to the appropriate
         PUDL_IN directory, coordinating other methods as needed
@@ -67,16 +87,19 @@ class ZenodoDownload:
         if filters is None:
             filters = {}
 
-        datapackage = self.datapackage_contents(archive)
+        dpkg = self.datapackage_contents(archive)
 
         output_dir = os.path.join(self.output_root, archive)
         os.makedirs(output_dir, exist_ok=True)
 
-        for resource in datapackage["resources"]:
+        self.logger.debug("Datapackage lists %d resources" %
+                          len(dpkg["resources"]))
 
-            if self.passes_filters(resource, filters):
-                local_path = self.download_resource(resource, output_dir)
-                yield local_path
+        for r in dpkg["resources"]:
+
+            if self.passes_filters(r, filters):
+                local_path = self.download_resource(r, output_dir)
+                self.logger.info("Downloaded %s" % local_path)
 
     def datapackage_contents(self, archive):
         """
@@ -123,7 +146,8 @@ class ZenodoDownload:
             self.logger.error(msg)
             raise ValueError(msg)
 
-        return yaml.load(response.text, Loader=yaml.FullLoader)
+        ymlr = yaml.load(response.text, Loader=yaml.FullLoader)
+        return ymlr
 
     def doi_to_url(self, doi):
         """
@@ -230,27 +254,23 @@ def main_arguments():
     return parser.parse_args()
 
 
-def available_archives(cfg):
+def available_archives():
     """
     List available sources, as found in the ~/.pudl.yaml file
 
-    Args:
-        cfg: dict of the config from ~/.pudl.yaml
-    Returns:
-        str, describe available sources
+    Args: None
+    Returns: str, describe available sources
     """
+    cfg = ZenodoDownload.load_config()
+
     try:
-        sandboxes = ", ".join(cfg["zenodo_download"]["sandbox_dois"].keys())
-    except AttributeError:
-        sandboxes = "None"
-    except KeyError:
+        sandboxes = ", ".join(cfg["zenodo_download"]["sandbox"]["dois"].keys())
+    except:
         sandboxes = "None"
 
     try:
-        production = ", ".join(cfg["zenodo_download"]["production_dois"].keys())
-    except AttributeError:
-        production = "None"
-    except KeyError:
+        production = ", ".join(cfg["zenodo_download"]["production"]["dois"].keys())
+    except:
         production = "None"
 
     return """Available Archives
@@ -263,25 +283,25 @@ def available_archives(cfg):
 
 if __name__ == "__main__":
 
-    arguments = main_arguments()
+    args = main_arguments()
 
-    with open(os.path.expanduser("~/.pudl.yaml"), "r") as f:
-        cfg = yaml.load(f.read(), Loader=yaml.FullLoader)
-
-        if "zenodo_download" not in cfg:
-            raise ValueError("No zenodo_download config in ~/.pudl.yaml")
-
-    if arguments.archive == "list":
-        print(available_archives(cfg))
+    if args.archive == "list":
+        print(available_archives())
         sys.exit()
 
     filters = {}
 
-    if gettattr(args, "year", None) is not None:
+    if getattr(args, "year", None) is not None:
         filters["year"] = args.year
 
-    if gettattr(args, "month", None) is not None:
+    if getattr(args, "month", None) is not None:
         filters["month"] = args.month
 
-    if gettattr(args, "state", None) is not None:
+    if getattr(args, "state", None) is not None:
         filters["state"] = args.state
+
+    zen_dl = ZenodoDownload(loglevel=args.loglevel, verbose=args.verbose,
+                            sandbox=args.sandbox)
+
+    zen_dl.collect(args.archive, filters=filters)
+    zen_dl.logger.debug("Done")
